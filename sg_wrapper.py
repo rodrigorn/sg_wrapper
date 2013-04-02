@@ -165,10 +165,16 @@ class Shotgun():
 
         return result
 
-    def create_entity(self, entityType, data):
-        sg_result = self._sg.create(entityType, data, data.keys())
-        if sg_result:
-            return Entity(self, entityType, sg_result)
+    def create(self, entity, fields):
+        data = {}
+        for f in fields:
+            if isinstance(entity[f], Entity):
+                ent = entity.field(f)
+                data[f] = {'id': ent.entity_id(), 'type': ent.entity_type()}
+            else:
+                data[f] = entity[f]
+
+        return self._sg.create(entity.entity_type(), data, entity.fields())
 
     def delete_entity(self, entity):
         self.unregister_entity(entity)
@@ -183,7 +189,11 @@ class Shotgun():
     def update(self, entity, updateFields):
         updateData = {}
         for f in updateFields:
-            updateData[f] = entity.field(f)
+            if isinstance(entity.field(f), Entity):
+                ent = entity.field(f)
+                updateData[f] = {'id': ent.entity_id(), 'type': ent.entity_type()}
+            else:
+                updateData[f] = entity.field(f)
         self._sg.update(entity._entity_type, entity._entity_id, updateData)
 
     def unregister_entity(self, entity):
@@ -230,14 +240,16 @@ class Entity():
         self._sg_filters = []
 
         self._entity_id = self._fields['id']
-        self._shotgun.register_entity(self)
+        if self._entity_id:
+            self._shotgun.register_entity(self)
 
     def reload(self):
-        self._field_names = self._shotgun.get_entity_field_list(self._entity_type)
+        #self._field_names = self._shotgun.get_entity_field_list(self._entity_type)
+        field_names = self.fields()
         self._fields = self._shotgun.sg_find_one(
             self._entity_type,
             [["id", "is", self._entity_id]],
-            fields = self._field_names)
+            fields = field_names)
 
     def fields(self):
         return self._fields.keys()
@@ -269,20 +281,32 @@ class Entity():
 
     def list_iterator(self, entities):
         for entity in entities:
-            if 'entity' not in entity:
-                entity['entity'] = self._shotgun.find_entity(entity['type'], id=entity['id'])
-                #entity['entity'] = Entity(self._shotgun, entity['type'], {'id': entity['id']})
-
-            yield entity['entity']
+            if type(entity) == dict and 'id' in entity and 'type' in entity:
+                if 'entity' not in entity:
+                    entity['entity'] = self._shotgun.find_entity(entity['type'], id=entity['id'])
+                    #entity['entity'] = Entity(self._shotgun, entity['type'], {'id': entity['id']})
+    
+                yield entity['entity']
+            else:
+                yield entity
 
     def modified_fields(self):
         return self._fields_changed.keys()
+
+    def save(self):
+        fields = self._shotgun.create(self, self._fields_changed.keys())
+        self._fields = fields
+        self._entity_id = self._fields['id']
+        self._shotgun.register_entity(self)
 
     def commit(self):
         if not self.modified_fields():
             return False
 
-        self._shotgun.update(self, self._fields_changed.keys())
+        if not self.entity_id():
+            self.save()
+        else:
+            self._shotgun.update(self, self._fields_changed.keys())
         self._fields_changed = {}
         return True
 
@@ -302,7 +326,10 @@ class Entity():
         if fieldName in entityFields:
             if entityFields[fieldName]['editable']['value'] is True:
                 oldValue = self._fields[fieldName]
-                self._fields[fieldName] = value
+                if isinstance(value, Entity):
+                    self._fields[fieldName] = {'id': value.entity_id(), 'type': value.entity_type(), 'entity':value}
+                else:
+                    self._fields[fieldName] = value
                 if fieldName not in self._fields_changed:
                     self._fields_changed[fieldName] = oldValue
             else:
@@ -325,3 +352,6 @@ class Entity():
 
     def __setitem__(self, itemName, value):
         self.set_field(itemName, value)
+
+    def __str__(self):
+        return "Entity %s id %s" % (self._entity_type, self._entity_id)
